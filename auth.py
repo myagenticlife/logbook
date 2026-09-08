@@ -181,3 +181,12 @@ def ensure_admin_bootstrap(storage):
         print(f"AUTH BOOTSTRAP: Generated token for admin {email}")
         print(f"  ACCESS TOKEN: {user.access_token}")
         print("=" * 60)
+        return
+
+    # Operator escape hatch: reprint the EXISTING admin token to the logs when
+    # PRINT_ADMIN_TOKEN is set (for recovering access). Unset it afterward.
+    if os.environ.get("PRINT_ADMIN_TOKEN"):
+        print("=" * 60)
+        print(f"AUTH BOOTSTRAP: Admin {email} already exists")
+        print(f"  ACCESS TOKEN: {user.access_token}")
+        print("=" * 60)
