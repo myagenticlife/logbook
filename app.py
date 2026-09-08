@@ -79,8 +79,14 @@ from auth import auth_bp, ensure_admin_bootstrap, is_admin  # noqa: E402
 app.register_blueprint(auth_bp)
 app.jinja_env.globals["is_admin"] = is_admin
 
-# Ensure admin user exists with a valid token; print token to logs if generated
-ensure_admin_bootstrap(storage)
+# Ensure admin user exists with a valid token; print token to logs if generated.
+# Run OFF the import path in a background thread: a slow/blocked first DB
+# connection must never stop gunicorn from binding the port (Render kills the
+# deploy with "no open ports" if import blocks). The port binds immediately;
+# this finishes in the background.
+import threading as _threading
+
+_threading.Thread(target=ensure_admin_bootstrap, args=(storage,), daemon=True).start()
 
 
 def parse_float(value, default=0.0):
