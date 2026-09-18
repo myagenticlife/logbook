@@ -78,6 +78,8 @@ Example:
 
     # Gemini REST API base URL (Generative Language API)
     _GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+    # Model name — env-overridable so a future Google model change is config, not code.
+    _GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 
     def __init__(self):
         """Initialize OCR service."""
@@ -165,7 +167,7 @@ Example:
                 mime_type="image/jpeg",
             )
             response = self._client.models.generate_content(
-                model="gemini-2.0-flash",
+                model=self._GEMINI_MODEL,
                 contents=[prompt, image_part],
                 config=genai_types.GenerateContentConfig(
                     temperature=0.1,
@@ -175,7 +177,7 @@ Example:
             return response.text
 
         # REST API path (service account or API key without SDK)
-        url = f"{self._GEMINI_API_URL}/gemini-2.0-flash:generateContent"
+        url = f"{self._GEMINI_API_URL}/{self._GEMINI_MODEL}:generateContent"
         headers = {"Content-Type": "application/json"}
         params = {}
 
