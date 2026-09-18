@@ -12,3 +12,4 @@ geopy
 gunicorn
 psycopg2-binary
 google-auth>=2.0.0
+PyJWT==2.9.0

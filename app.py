@@ -11,8 +11,10 @@ from datetime import datetime
 from authlib.integrations.flask_client import OAuth
 from config import Config
 from flask import Flask, jsonify, redirect, render_template, request, send_file, url_for
-from flask_login import LoginManager, current_user, login_required
+from flask_login import LoginManager, current_user, login_required, login_user
+import jwt as _jwt
 from models.logbook_entry import Logbook, LogbookEntry, make_entry_key, normalize_airport
+from models.user import User as _SuiteUser, generate_access_token as _gen_token
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 app = Flask(__name__)
@@ -54,6 +56,32 @@ login_manager.login_view = "auth.access"
 @login_manager.user_loader
 def load_user(user_id):
     return storage.get_user(user_id)
+
+
+@app.before_request
+def _suite_sso():
+    """Single sign-on with the MyAgenticLife suite: if the visitor carries a
+    valid suite session cookie (mal_session JWT), sign them into the logbook
+    automatically so they never hit the local token wall. Inert (no-op) unless
+    SESSION_SECRET is configured to match the accounts service."""
+    if current_user.is_authenticated:
+        return
+    token = request.cookies.get("mal_session")
+    secret = os.environ.get("SESSION_SECRET")
+    if not token or not secret:
+        return
+    try:
+        payload = _jwt.decode(token, secret, algorithms=["HS256"])
+    except Exception:
+        return
+    email = (payload.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        return  # e.g. the admin-code session (email 'admin') — ignore
+    user = storage.get_user_by_email(email)
+    if user is None:
+        user = _SuiteUser(email=email, name=(payload.get("name") or email.split("@")[0]), access_token=_gen_token())
+        storage.create_user(user)
+    login_user(user, remember=True)
 
 
 # Google OAuth client kept registered for future use; UI is hidden.
@@ -115,18 +143,9 @@ def normalize_route_via(route_via: str) -> str:
 
 @app.route("/")
 def index():
-    """Landing page with cards for Logbook and Journey."""
-    if current_user.is_authenticated:
-        logbook_url = url_for("logbook_view")
-        journey_url = "https://rtw-flight-map.onrender.com"
-    else:
-        logbook_url = url_for("auth.access", next=url_for("logbook_view"))
-        journey_url = url_for("auth.access")
-    return render_template(
-        "landing.html",
-        logbook_url=logbook_url,
-        journey_url=journey_url,
-    )
+    """The suite front door now lives at myagenticlife.com — send people there
+    instead of the retired local 'Tools for the modern pilot' landing."""
+    return redirect("https://myagenticlife.com")
 
 
 @app.route("/logbook")
