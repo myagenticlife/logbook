@@ -157,56 +157,67 @@ Example:
         except Exception as e:
             print(f"Error initializing Gemini: {e}")
 
+    _MAX_OUTPUT_TOKENS = 32768   # busy pages truncated at 8192 -> malformed JSON
+
     def _gemini_generate(self, prompt: str, image_bytes: bytes) -> str:
-        """Call Gemini generate_content via SDK or REST API. Returns response text."""
-        import base64
+        """Call Gemini via SDK or REST. Retries on rate-limit (429) / transient
+        (500/503/timeout) with exponential backoff so rapid-fire pages pace out."""
+        import base64, time
 
-        if self._use_sdk and self._client:
-            image_part = genai_types.Part.from_bytes(
-                data=image_bytes,
-                mime_type="image/jpeg",
-            )
-            response = self._client.models.generate_content(
-                model=self._GEMINI_MODEL,
-                contents=[prompt, image_part],
-                config=genai_types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=8192,
-                ),
-            )
-            return response.text
+        attempts = 6
+        for attempt in range(attempts):
+            try:
+                if self._use_sdk and self._client:
+                    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+                    response = self._client.models.generate_content(
+                        model=self._GEMINI_MODEL,
+                        contents=[prompt, image_part],
+                        config=genai_types.GenerateContentConfig(
+                            temperature=0.1, max_output_tokens=self._MAX_OUTPUT_TOKENS),
+                    )
+                    return response.text
 
-        # REST API path (service account or API key without SDK)
-        url = f"{self._GEMINI_API_URL}/{self._GEMINI_MODEL}:generateContent"
-        headers = {"Content-Type": "application/json"}
-        params = {}
+                # REST API path (service account or API key without SDK)
+                url = f"{self._GEMINI_API_URL}/{self._GEMINI_MODEL}:generateContent"
+                headers = {"Content-Type": "application/json"}
+                params = {}
+                if self._sa_credentials:
+                    from google.auth.transport.requests import Request
+                    if not self._sa_credentials.valid:
+                        self._sa_credentials.refresh(Request())
+                    headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
+                elif getattr(self, '_api_key', None):
+                    params["key"] = self._api_key
 
-        if self._sa_credentials:
-            from google.auth.transport.requests import Request
-            if not self._sa_credentials.valid:
-                self._sa_credentials.refresh(Request())
-            headers["Authorization"] = f"Bearer {self._sa_credentials.token}"
-        elif getattr(self, '_api_key', None):
-            params["key"] = self._api_key
-
-        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
-        body = {
-            "contents": [{"parts": [
-                {"text": prompt},
-                {"inlineData": {"mimeType": "image/jpeg", "data": image_b64}},
-            ]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 8192,
-            },
-        }
-
-        resp = _requests.post(url, headers=headers, params=params, json=body, timeout=120)
-        if resp.status_code != 200:
-            raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
-
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+                image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+                body = {
+                    "contents": [{"parts": [
+                        {"text": prompt},
+                        {"inlineData": {"mimeType": "image/jpeg", "data": image_b64}},
+                    ]}],
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": self._MAX_OUTPUT_TOKENS},
+                }
+                resp = _requests.post(url, headers=headers, params=params, json=body, timeout=180)
+                if resp.status_code in (429, 500, 503) and attempt < attempts - 1:
+                    ra = resp.headers.get("Retry-After")
+                    wait = int(ra) if (ra and str(ra).isdigit()) else min(64, 6 * (2 ** attempt))
+                    print(f"Gemini {resp.status_code}; retry {attempt+1}/{attempts} in {wait}s")
+                    time.sleep(wait)
+                    continue
+                if resp.status_code != 200:
+                    raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
+                data = resp.json()
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            except Exception as e:
+                msg = str(e)
+                transient = any(k in msg for k in ("429", "RESOURCE_EXHAUSTED", "500", "503", "overloaded", "timed out", "timeout"))
+                if transient and attempt < attempts - 1:
+                    wait = min(64, 6 * (2 ** attempt))
+                    print(f"Gemini transient ({msg[:60]}); retry {attempt+1}/{attempts} in {wait}s")
+                    time.sleep(wait)
+                    continue
+                raise
+        raise RuntimeError("Gemini generate failed after retries")
 
     def extract_flights_with_gemini(self, image_path: str,
                                      known_idents: set[str] | None = None,
