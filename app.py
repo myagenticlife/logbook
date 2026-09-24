@@ -318,6 +318,18 @@ def delete_entry(entry_id):
     return jsonify({"error": "Delete failed"}), 500
 
 
+@app.route("/api/audit", methods=["GET"])
+@login_required
+def audit_logbook_api():
+    """Deterministic audit of the signed-in user's logbook — returns structured
+    findings (duplicates, time mismatches, impossible values, bad dates)."""
+    from services.logbook_audit import audit_entries
+    entries = storage.get_all_entries(user_id=current_user.id, sort_by_date=True)
+    dicts = [e.to_dict() for e in entries]
+    findings = audit_entries(dicts)
+    return jsonify({"total_entries": len(dicts), "finding_count": len(findings), "findings": findings})
+
+
 @app.route("/api/entries/batch", methods=["DELETE"])
 @login_required
 def batch_delete_entries():
