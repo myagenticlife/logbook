@@ -249,6 +249,8 @@ def create_entry():
         num_inst_app=parse_int(data.get("num_inst_app")),
         landings_day=parse_int(data.get("landings_day")),
         landings_night=parse_int(data.get("landings_night")),
+        takeoffs_day=parse_int(data.get("takeoffs_day")),
+        takeoffs_night=parse_int(data.get("takeoffs_night")),
         pic=parse_float(data.get("pic")),
         sic=parse_float(data.get("sic")),
         dual_recd=parse_float(data.get("dual_recd")),
@@ -290,6 +292,8 @@ def update_entry(entry_id):
     entry.num_inst_app = parse_int(data.get("num_inst_app"), entry.num_inst_app)
     entry.landings_day = parse_int(data.get("landings_day"), entry.landings_day)
     entry.landings_night = parse_int(data.get("landings_night"), entry.landings_night)
+    entry.takeoffs_day = parse_int(data.get("takeoffs_day"), entry.takeoffs_day)
+    entry.takeoffs_night = parse_int(data.get("takeoffs_night"), entry.takeoffs_night)
     entry.pic = parse_float(data.get("pic"), entry.pic)
     entry.sic = parse_float(data.get("sic"), entry.sic)
     entry.dual_recd = parse_float(data.get("dual_recd"), entry.dual_recd)

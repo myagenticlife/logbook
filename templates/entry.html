@@ -555,11 +555,19 @@
         </div>
       </div>
 
-      <!-- Landings -->
+      <!-- Takeoffs & Landings -->
       <div class="section">
-        <div class="section-header">Landings</div>
+        <div class="section-header">Takeoffs &amp; Landings</div>
         <div class="section-body">
           <div class="form-grid">
+            <div class="form-group">
+              <label>Day Takeoffs</label>
+              <input type="number" id="takeoffs_day" value="{{ entry.takeoffs_day }}" min="0" placeholder="0">
+            </div>
+            <div class="form-group">
+              <label>Night Takeoffs</label>
+              <input type="number" id="takeoffs_night" value="{{ entry.takeoffs_night }}" min="0" placeholder="0">
+            </div>
             <div class="form-group">
               <label>Day Landings</label>
               <input type="number" id="landings_day" value="{{ entry.landings_day }}" min="0" placeholder="0">
@@ -634,7 +642,7 @@
       'date', 'aircraft_model', 'aircraft_ident', 'route_from', 'route_to', 'route_via',
       'sel', 'mel', 'day', 'night', 'cross_country',
       'actual_inst', 'simulated_inst', 'num_inst_app',
-      'landings_day', 'landings_night',
+      'landings_day', 'landings_night', 'takeoffs_day', 'takeoffs_night',
       'pic', 'sic', 'dual_recd', 'dual_given', 'solo', 'sim', 'total_duration',
       'remarks'
     ];

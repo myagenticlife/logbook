@@ -52,9 +52,11 @@ class LogbookEntry:
     # Instrument
     num_inst_app: int = 0  # Number of Instrument Approaches
 
-    # Landings
+    # Takeoffs and landings
     landings_day: int = 0
     landings_night: int = 0
+    takeoffs_day: int = 0
+    takeoffs_night: int = 0
 
     # Type of Piloting Time
     pic: float = 0.0  # Pilot in Command

@@ -73,6 +73,8 @@ class PostgresStorage:
                         num_inst_app INTEGER DEFAULT 0,
                         landings_day INTEGER DEFAULT 0,
                         landings_night INTEGER DEFAULT 0,
+                        takeoffs_day INTEGER DEFAULT 0,
+                        takeoffs_night INTEGER DEFAULT 0,
                         pic DOUBLE PRECISION DEFAULT 0,
                         sic DOUBLE PRECISION DEFAULT 0,
                         dual_recd DOUBLE PRECISION DEFAULT 0,
@@ -116,6 +118,8 @@ class PostgresStorage:
             # Migrate: add new entry columns if they don't exist
             for col, col_def in [
                 ("source", "TEXT DEFAULT 'manual'"),
+                ("takeoffs_day", "INTEGER DEFAULT 0"),
+                ("takeoffs_night", "INTEGER DEFAULT 0"),
             ]:
                 try:
                     with conn.cursor() as cur:
@@ -206,10 +210,11 @@ class PostgresStorage:
                         route_from, route_to, route_via, sel, mel, day, night,
                         cross_country, actual_inst, simulated_inst,
                         num_inst_app, landings_day, landings_night,
+                        takeoffs_day, takeoffs_night,
                         pic, sic, dual_recd, dual_given, solo, sim,
                         total_duration, duration_estimated, remarks,
                         created_at, updated_at, locked, reviewed, source, user_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                     (
                         entry.id,
@@ -229,6 +234,8 @@ class PostgresStorage:
                         entry.num_inst_app,
                         entry.landings_day,
                         entry.landings_night,
+                        entry.takeoffs_day,
+                        entry.takeoffs_night,
                         entry.pic,
                         entry.sic,
                         entry.dual_recd,
@@ -294,6 +301,7 @@ class PostgresStorage:
                         sel=%s, mel=%s, day=%s, night=%s,
                         cross_country=%s, actual_inst=%s, simulated_inst=%s,
                         num_inst_app=%s, landings_day=%s, landings_night=%s,
+                        takeoffs_day=%s, takeoffs_night=%s,
                         pic=%s, sic=%s, dual_recd=%s, dual_given=%s, solo=%s, sim=%s,
                         total_duration=%s, duration_estimated=%s, remarks=%s,
                         updated_at=%s, locked=%s, reviewed=%s, source=%s
@@ -316,6 +324,8 @@ class PostgresStorage:
                         entry.num_inst_app,
                         entry.landings_day,
                         entry.landings_night,
+                        entry.takeoffs_day,
+                        entry.takeoffs_night,
                         entry.pic,
                         entry.sic,
                         entry.dual_recd,
@@ -505,10 +515,11 @@ class PostgresStorage:
                                 route_from, route_to, route_via, sel, mel, day, night,
                                 cross_country, actual_inst, simulated_inst,
                                 num_inst_app, landings_day, landings_night,
+                                takeoffs_day, takeoffs_night,
                                 pic, sic, dual_recd, dual_given, solo, sim,
                                 total_duration, duration_estimated, remarks,
                                 created_at, updated_at, locked, reviewed
-                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             ON CONFLICT (id) DO UPDATE SET
                                 date=EXCLUDED.date, aircraft_model=EXCLUDED.aircraft_model,
                                 aircraft_ident=EXCLUDED.aircraft_ident, route_from=EXCLUDED.route_from,
@@ -532,6 +543,8 @@ class PostgresStorage:
                                 entry.num_inst_app,
                                 entry.landings_day,
                                 entry.landings_night,
+                                entry.takeoffs_day,
+                                entry.takeoffs_night,
                                 entry.pic,
                                 entry.sic,
                                 entry.dual_recd,
@@ -712,6 +725,8 @@ class PostgresStorage:
             num_inst_app=int(row["num_inst_app"] or 0),
             landings_day=int(row["landings_day"] or 0),
             landings_night=int(row["landings_night"] or 0),
+            takeoffs_day=int((row["takeoffs_day"] if "takeoffs_day" in row else 0) or 0),
+            takeoffs_night=int((row["takeoffs_night"] if "takeoffs_night" in row else 0) or 0),
             pic=float(row["pic"] or 0),
             sic=float(row["sic"] or 0),
             dual_recd=float(row["dual_recd"] or 0),
