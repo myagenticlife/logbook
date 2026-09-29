@@ -26,6 +26,16 @@ except ImportError:
 import requests as _requests
 
 
+class OCRAuthError(Exception):
+    """Gemini authentication/authorization failed (bad/expired key, denied project,
+    or no credentials). Never retried — surfaced to the caller verbatim so the user
+    sees the real reason instead of a misleading 'no entries detected'."""
+
+
+class OCRError(Exception):
+    """Gemini extraction failed for a non-auth reason (API error after retries,
+    unparseable response). Surfaced to the caller."""
+
 
 class LogbookOCRService:
     """Service for extracting flight data from logbook images."""
@@ -134,9 +144,10 @@ Example:
                         f.write(sa_json)
                     print(f"Created {sa_path} from GOOGLE_SERVICE_ACCOUNT_JSON env var ({len(sa_json)} chars)")
                 else:
-                    print("Error: No GEMINI_API_KEY, no service-account.json, and "
-                          "GOOGLE_SERVICE_ACCOUNT_JSON env var is empty.")
-                    return
+                    raise OCRAuthError(
+                        "Gemini is not configured: set GEMINI_API_KEY (an API key from "
+                        "https://aistudio.google.com/apikey) on the logbook service. "
+                        "Note: service accounts are NOT accepted by the Gemini API.")
 
             if os.path.exists(sa_path):
                 from google.oauth2.service_account import Credentials
@@ -152,10 +163,13 @@ Example:
                 print(f"Gemini initialized with service account (REST) from {sa_path}")
                 return
 
-            print("Error: No GEMINI_API_KEY and no service-account.json found.")
+            raise OCRAuthError(
+                "Gemini is not configured: no GEMINI_API_KEY and no usable service account.")
 
+        except OCRAuthError:
+            raise
         except Exception as e:
-            print(f"Error initializing Gemini: {e}")
+            raise OCRAuthError(f"Gemini initialization failed: {e}")
 
     _MAX_OUTPUT_TOKENS = 32768   # busy pages truncated at 8192 -> malformed JSON
 
@@ -198,6 +212,9 @@ Example:
                     "generationConfig": {"temperature": 0.1, "maxOutputTokens": self._MAX_OUTPUT_TOKENS},
                 }
                 resp = _requests.post(url, headers=headers, params=params, json=body, timeout=180)
+                # Auth/permission errors never succeed on retry — fail fast with the real reason.
+                if resp.status_code in (401, 403):
+                    raise OCRAuthError(f"Gemini auth failed ({resp.status_code}): {resp.text[:300]}")
                 if resp.status_code in (429, 500, 503) and attempt < attempts - 1:
                     ra = resp.headers.get("Retry-After")
                     wait = int(ra) if (ra and str(ra).isdigit()) else min(64, 6 * (2 ** attempt))
@@ -205,19 +222,73 @@ Example:
                     time.sleep(wait)
                     continue
                 if resp.status_code != 200:
-                    raise RuntimeError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
+                    raise OCRError(f"Gemini API error {resp.status_code}: {resp.text[:500]}")
                 data = resp.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"]
+            except OCRAuthError:
+                raise  # never retry auth failures
             except Exception as e:
                 msg = str(e)
+                # SDK surfaces auth failures as text — detect and fail fast.
+                if any(k in msg for k in ("401", "403", "PERMISSION_DENIED", "API key not valid",
+                                          "UNAUTHENTICATED", "denied access")):
+                    raise OCRAuthError(f"Gemini auth failed: {msg[:300]}")
                 transient = any(k in msg for k in ("429", "RESOURCE_EXHAUSTED", "500", "503", "overloaded", "timed out", "timeout"))
                 if transient and attempt < attempts - 1:
                     wait = min(64, 6 * (2 ** attempt))
                     print(f"Gemini transient ({msg[:60]}); retry {attempt+1}/{attempts} in {wait}s")
                     time.sleep(wait)
                     continue
-                raise
-        raise RuntimeError("Gemini generate failed after retries")
+                raise OCRError(f"Gemini generate failed: {msg[:300]}")
+        raise OCRError("Gemini generate failed after retries")
+
+    # Read the printed page total in a SEPARATE call from row extraction, so the
+    # checksum is independent (the extractor never grades its own arithmetic). Lesson
+    # learned the hard way: a same-call "page total" just re-sums the model's own rows.
+    _PAGE_TOTAL_PROMPT = (
+        "This is a photo of a pilot logbook page. At the very bottom are summary rows, "
+        "one labeled 'TOTALS THIS PAGE'. Read ONLY the handwritten number in that row under the "
+        "rightmost column headed 'TOTAL DURATION OF FLIGHT'. These logbooks split a number into a "
+        "whole-number sub-cell and a tenths sub-cell (e.g. '22 | 3' means 22.3). Do NOT sum the "
+        "individual flight rows yourself — read the number the pilot wrote in the totals row. "
+        'Return ONLY JSON, no prose: {"totals_this_page": <number>} (or {"totals_this_page": null} if unreadable).')
+
+    def read_printed_page_total(self, image_bytes: bytes) -> Optional[float]:
+        """Independently read the printed 'Totals This Page' (Total Duration column).
+        Returns None if unreadable. Never raises — a failed checksum read must not
+        break the scan itself."""
+        try:
+            raw = self._gemini_generate(self._PAGE_TOTAL_PROMPT, image_bytes)
+            txt = raw.strip()
+            m = re.search(r'\{.*\}', txt, re.S)
+            if not m:
+                return None
+            val = json.loads(m.group(0)).get("totals_this_page")
+            return float(val) if val is not None else None
+        except Exception as e:
+            print(f"Page-total read failed (non-fatal): {e}")
+            return None
+
+    @staticmethod
+    def checksum_entries(entries: list[dict], printed_this_page: Optional[float]):
+        """Compare the sum of extracted row durations to the independently-read printed
+        page total, and flag individually implausible rows (a single flight > 12h).
+        Returns a dict the UI/agent can act on. FLAGS mismatches — never edits rows."""
+        row_sum = round(sum(float(e.get('total_duration') or 0) for e in entries), 1)
+        implausible = [
+            {"date": e.get("date"), "aircraft_ident": e.get("aircraft_ident"),
+             "route_from": e.get("route_from"), "route_to": e.get("route_to"),
+             "total_duration": e.get("total_duration")}
+            for e in entries if float(e.get('total_duration') or 0) > 12.0
+        ]
+        reconciled = (printed_this_page is not None and abs(row_sum - printed_this_page) < 0.15)
+        return {
+            "row_sum": row_sum,
+            "printed_this_page": printed_this_page,
+            "reconciled": reconciled,
+            "difference": (round(row_sum - printed_this_page, 1) if printed_this_page is not None else None),
+            "implausible_rows": implausible,
+        }
 
     def extract_flights_with_gemini(self, image_path: str,
                                      known_idents: set[str] | None = None,
@@ -236,11 +307,7 @@ Example:
         Returns:
             Tuple of (entries, expected_rows, actual_rows)
         """
-        self._init_gemini()
-
-        if not self._initialized:
-            print("ERROR: Gemini not initialized — set GEMINI_API_KEY or provide service-account.json")
-            return [], 0, 0
+        self._init_gemini()  # raises OCRAuthError if unconfigured
 
         try:
             # Load image
@@ -328,13 +395,15 @@ Example:
 
             return filtered, expected_rows, len(filtered)
 
+        except (OCRAuthError, OCRError):
+            raise  # surface real auth/API failures to the caller, don't mask as "no entries"
         except json.JSONDecodeError as e:
             print(f"Error parsing Gemini JSON response: {e}")
             print(f"Response was: {response_text[:500]}")
-            return [], 0, 0
+            raise OCRError(f"Gemini returned an unparseable response: {e}")
         except Exception as e:
             print(f"Error with Gemini extraction: {e}")
-            return [], 0, 0
+            raise OCRError(f"Scan failed: {e}")
 
     def _normalize_dates(self, entries: list[dict]) -> list[dict]:
         """Fix dates across all entries: normalize format, propagate years, handle Dec→Jan rollover."""

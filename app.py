@@ -854,6 +854,8 @@ def upload_scan():
     if file.filename == '':
         return jsonify({"success": False, "error": "No file selected"}), 400
 
+    from services.ocr_service import OCRAuthError, OCRError
+    temp_path = None
     try:
         temp_path = f"/tmp/logbook_{uuid.uuid4()}.jpg"
         file.save(temp_path)
@@ -874,8 +876,6 @@ def upload_scan():
         t2 = time.time()
         print(f"Scan timing: db_queries={t1-t0:.2f}s, gemini+postprocess={t2-t1:.2f}s, total={t2-t0:.2f}s")
 
-        os.remove(temp_path)
-
         if not entries:
             return jsonify({
                 "success": False,
@@ -883,16 +883,35 @@ def upload_scan():
             }), 400
 
         print(f"Successfully extracted {actual_rows} of {expected_rows} entries")
+
+        # Independent page-total checksum (separate read; flags mismatches, never edits rows).
+        with open(temp_path, 'rb') as _f:
+            _img_bytes = _f.read()
+        printed_total = ocr_service.read_printed_page_total(_img_bytes)
+        checksum = LogbookOCRService.checksum_entries(entries, printed_total)
+        if not checksum["reconciled"]:
+            print(f"CHECKSUM FLAG: rows={checksum['row_sum']} vs printed={printed_total} "
+                  f"diff={checksum['difference']} implausible={len(checksum['implausible_rows'])}")
+
         return jsonify({
             "success": True,
             "entries": entries,
             "count": len(entries),
+            "expected_rows": expected_rows,
+            "checksum": checksum,
         })
 
+    except OCRAuthError as e:
+        # Configuration/auth problem — surface the real reason (don't mask as "no entries").
+        return jsonify({"success": False, "error": f"Scanning is not available: {e}",
+                        "kind": "auth"}), 502
+    except OCRError as e:
+        return jsonify({"success": False, "error": f"Scan failed: {e}", "kind": "ocr"}), 502
     except Exception as e:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
         return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 @app.route("/api/logbook/scan/import", methods=["POST"])
