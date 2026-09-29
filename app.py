@@ -387,6 +387,63 @@ def get_totals():
     return jsonify(storage.get_totals(user_id=current_user.id))
 
 
+@app.route("/api/summary", methods=["GET"])
+@login_required
+def get_summary():
+    """Flexible, filtered totals so an agent can sum & checksum on demand.
+    Query params (all optional): through=MM/DD/YYYY (on/before), from_date=MM/DD/YYYY (on/after),
+    aircraft=IDENT, source=scan-book1|flightaware|... . Returns count + summed hours by category."""
+    import datetime as _dt
+
+    def _pdate(x):
+        for f in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+            try:
+                return _dt.datetime.strptime(str(x).strip(), f).date()
+            except Exception:
+                pass
+        return None
+
+    through = _pdate(request.args.get("through", "")) if request.args.get("through") else None
+    from_date = _pdate(request.args.get("from_date", "")) if request.args.get("from_date") else None
+    aircraft = (request.args.get("aircraft") or "").upper().strip()
+    source = (request.args.get("source") or "").strip()
+
+    entries = [e.to_dict() for e in storage.get_all_entries(user_id=current_user.id)]
+    fields = ["total_duration", "sel", "mel", "day", "night", "cross_country",
+              "actual_inst", "simulated_inst", "pic", "sic", "dual_recd", "dual_given", "solo", "sim"]
+    sums = {f: 0.0 for f in fields}
+    count = 0
+    landings = 0
+    matched_dates = []
+    for e in entries:
+        d = _pdate(e.get("date"))
+        if through and (d is None or d > through):
+            continue
+        if from_date and (d is None or d < from_date):
+            continue
+        if aircraft and (e.get("aircraft_ident") or "").upper() != aircraft:
+            continue
+        if source and (e.get("source") or "") != source:
+            continue
+        count += 1
+        if d:
+            matched_dates.append(d)
+        for f in fields:
+            try:
+                sums[f] += float(e.get(f) or 0)
+            except Exception:
+                pass
+        landings += int(e.get("landings_day") or 0) + int(e.get("landings_night") or 0)
+    return jsonify({
+        "count": count,
+        "total_landings": landings,
+        "date_range": ([min(matched_dates).isoformat(), max(matched_dates).isoformat()] if matched_dates else None),
+        "hours": {f: round(v, 1) for f, v in sums.items()},
+        "filters": {"through": request.args.get("through"), "from_date": request.args.get("from_date"),
+                    "aircraft": aircraft or None, "source": source or None},
+    })
+
+
 @app.route("/api/export/json", methods=["GET"])
 @login_required
 def export_json():
