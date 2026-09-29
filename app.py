@@ -259,6 +259,7 @@ def create_entry():
         sim=parse_float(data.get("sim")),
         total_duration=parse_float(data.get("total_duration")),
         remarks=data.get("remarks", ""),
+        source=data.get("source", "manual"),
     )
 
     storage.add_entry(entry, user_id=current_user.id)
