@@ -80,6 +80,8 @@ class LogbookEntry:
     # Entry state
     locked: bool = False
     reviewed: bool = True  # Manually created entries don't need review
+    needs_review: bool = False  # Agent flags entries it wants the pilot to review
+    review_note: str = ""       # Agent's comment explaining what to check
     source: str = "manual"  # "manual", "scan", "flightaware", "sheets"
 
     # Owner

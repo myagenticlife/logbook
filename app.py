@@ -303,6 +303,10 @@ def update_entry(entry_id):
     entry.sim = parse_float(data.get("sim"), entry.sim)
     entry.total_duration = parse_float(data.get("total_duration"), entry.total_duration)
     entry.remarks = data.get("remarks", entry.remarks)
+    if "needs_review" in data:
+        entry.needs_review = bool(data.get("needs_review"))
+    if "review_note" in data:
+        entry.review_note = data.get("review_note") or ""
 
     storage.update_entry(entry, user_id=uid)
     return jsonify({"message": "Entry updated"})
@@ -393,7 +397,7 @@ _QUERY_FIELDS = {
     "sel", "mel", "day", "night", "cross_country", "actual_inst", "simulated_inst",
     "num_inst_app", "landings_day", "landings_night", "takeoffs_day", "takeoffs_night",
     "pic", "sic", "dual_recd", "dual_given", "solo", "sim", "total_duration",
-    "remarks", "source", "locked", "reviewed", "id",
+    "remarks", "source", "locked", "reviewed", "needs_review", "review_note", "id",
 }
 _NUM_FIELDS = {
     "sel", "mel", "day", "night", "cross_country", "actual_inst", "simulated_inst",

@@ -345,6 +345,13 @@
     .source-icon.scan { color: #8b5cf6; }
     .source-icon.flightaware { color: #0ea5e9; }
     .source-icon.sheets { color: #22c55e; }
+    .review-icon { font-size: 0.7rem; color: #f59e0b; margin-left: 4px; }
+    .review-note {
+      margin-top: 4px; font-size: 0.8rem; color: #b45309;
+      background: rgba(245, 158, 11, 0.10); border-left: 3px solid #f59e0b;
+      padding: 4px 8px; border-radius: 4px;
+    }
+    .review-note i { font-size: 0.65rem; margin-right: 4px; }
 
     /* Mobile selection bar */
     .mobile-select-bar {
@@ -765,12 +772,16 @@
                 {% if entry.source == 'scan' %}<i class="fas fa-camera source-icon scan" title="Scanned"></i>
                 {% elif entry.source == 'flightaware' %}<i class="fas fa-satellite-dish source-icon flightaware" title="FlightAware"></i>
                 {% elif entry.source == 'sheets' %}<i class="fas fa-table source-icon sheets" title="Google Sheets"></i>{% endif %}
+                {% if entry.needs_review %}<i class="fas fa-flag review-icon" title="Flagged for review"></i>{% endif %}
               </div>
               <div class="flight-meta">
                 <span class="flight-date">{{ entry.date }}</span>
                 <span class="flight-aircraft">{{ entry.aircraft_model }}</span>
                 <span class="flight-tail">{{ entry.aircraft_ident }}</span>
               </div>
+              {% if entry.needs_review and entry.review_note %}
+              <div class="review-note"><i class="fas fa-flag"></i> {{ entry.review_note }}</div>
+              {% endif %}
             </div>
             <span class="flight-duration{% if entry.duration_estimated %} estimated{% endif %}">
               {% if entry.total_duration %}{{ "%.1f"|format(entry.total_duration) }}h{% else %}—{% endif %}

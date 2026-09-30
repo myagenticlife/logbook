@@ -88,6 +88,8 @@ class PostgresStorage:
                         updated_at TEXT,
                         locked INTEGER DEFAULT 0,
                         reviewed INTEGER DEFAULT 1,
+                        needs_review INTEGER DEFAULT 0,
+                        review_note TEXT DEFAULT '',
                         user_id TEXT DEFAULT ''
                     )
                 """)
@@ -120,6 +122,8 @@ class PostgresStorage:
                 ("source", "TEXT DEFAULT 'manual'"),
                 ("takeoffs_day", "INTEGER DEFAULT 0"),
                 ("takeoffs_night", "INTEGER DEFAULT 0"),
+                ("needs_review", "INTEGER DEFAULT 0"),
+                ("review_note", "TEXT DEFAULT ''"),
             ]:
                 try:
                     with conn.cursor() as cur:
@@ -213,8 +217,9 @@ class PostgresStorage:
                         takeoffs_day, takeoffs_night,
                         pic, sic, dual_recd, dual_given, solo, sim,
                         total_duration, duration_estimated, remarks,
-                        created_at, updated_at, locked, reviewed, source, user_id
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        created_at, updated_at, locked, reviewed,
+                        needs_review, review_note, source, user_id
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                     (
                         entry.id,
@@ -249,6 +254,8 @@ class PostgresStorage:
                         entry.updated_at,
                         1 if entry.locked else 0,
                         1 if entry.reviewed else 0,
+                        1 if entry.needs_review else 0,
+                        entry.review_note,
                         entry.source,
                         user_id,
                     ),
@@ -304,7 +311,8 @@ class PostgresStorage:
                         takeoffs_day=%s, takeoffs_night=%s,
                         pic=%s, sic=%s, dual_recd=%s, dual_given=%s, solo=%s, sim=%s,
                         total_duration=%s, duration_estimated=%s, remarks=%s,
-                        updated_at=%s, locked=%s, reviewed=%s, source=%s
+                        updated_at=%s, locked=%s, reviewed=%s,
+                        needs_review=%s, review_note=%s, source=%s
                     WHERE id=%s AND user_id=%s
                 """,
                     (
@@ -338,6 +346,8 @@ class PostgresStorage:
                         entry.updated_at,
                         1 if entry.locked else 0,
                         1 if entry.reviewed else 0,
+                        1 if entry.needs_review else 0,
+                        entry.review_note,
                         entry.source,
                         entry.id,
                         user_id,
@@ -740,5 +750,7 @@ class PostgresStorage:
             updated_at=row["updated_at"] or "",
             locked=bool(row["locked"]) if row["locked"] is not None else False,
             reviewed=bool(row["reviewed"]) if row["reviewed"] is not None else True,
+            needs_review=bool(row["needs_review"]) if ("needs_review" in row and row["needs_review"] is not None) else False,
+            review_note=(row["review_note"] if "review_note" in row else "") or "",
             source=row.get("source") or "manual",
         )
