@@ -387,6 +387,183 @@ def get_totals():
     return jsonify(storage.get_totals(user_id=current_user.id))
 
 
+# ---- Agent query layer: safe, parameterized filtering over the user's own entries ----
+_QUERY_FIELDS = {
+    "date", "aircraft_model", "aircraft_ident", "route_from", "route_to", "route_via",
+    "sel", "mel", "day", "night", "cross_country", "actual_inst", "simulated_inst",
+    "num_inst_app", "landings_day", "landings_night", "takeoffs_day", "takeoffs_night",
+    "pic", "sic", "dual_recd", "dual_given", "solo", "sim", "total_duration",
+    "remarks", "source", "locked", "reviewed", "id",
+}
+_NUM_FIELDS = {
+    "sel", "mel", "day", "night", "cross_country", "actual_inst", "simulated_inst",
+    "num_inst_app", "landings_day", "landings_night", "takeoffs_day", "takeoffs_night",
+    "pic", "sic", "dual_recd", "dual_given", "solo", "sim", "total_duration",
+}
+
+
+def _q_date(x):
+    import datetime as _dt
+    for f in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
+        try:
+            return _dt.datetime.strptime(str(x).strip(), f).date()
+        except Exception:
+            pass
+    return None
+
+
+def _q_num(x):
+    try:
+        return float(x or 0)
+    except Exception:
+        return 0.0
+
+
+def _cond_matches(entry, cond):
+    """Evaluate one {field, op, value} condition against an entry dict. Safe: field must
+    be whitelisted; op is enumerated; comparison is type-aware (no eval, no SQL)."""
+    field = cond.get("field")
+    op = (cond.get("op") or "eq").lower()
+    val = cond.get("value")
+    if field not in _QUERY_FIELDS:
+        raise ValueError(f"unknown field '{field}'")
+    raw = entry.get(field)
+    # date-specific operators
+    if op in ("year", "month", "between", "before", "after"):
+        d = _q_date(raw)
+        if d is None:
+            return False
+        if op == "year":
+            return d.year == int(val)
+        if op == "month":
+            return d.month == int(val)
+        if op == "before":
+            return d < _q_date(val)
+        if op == "after":
+            return d > _q_date(val)
+        if op == "between":
+            lo, hi = _q_date(val[0]), _q_date(val[1])
+            return (lo is None or d >= lo) and (hi is None or d <= hi)
+    # emptiness / zero
+    if op == "is_empty":
+        return raw in (None, "", 0, 0.0, "0")
+    if op == "is_zero":
+        return _q_num(raw) == 0.0
+    if op == "not_empty":
+        return raw not in (None, "", 0, 0.0, "0")
+    if op == "contains":
+        return str(val).lower() in str(raw or "").lower()
+    if op == "in":
+        vals = [str(v).lower() for v in (val or [])]
+        return str(raw or "").lower() in vals
+    # numeric vs string comparisons
+    if field in _NUM_FIELDS:
+        a, b = _q_num(raw), _q_num(val)
+    else:
+        a, b = str(raw or "").lower(), str(val or "").lower()
+    return {
+        "eq": a == b, "ne": a != b, "lt": a < b, "lte": a <= b,
+        "gt": a > b, "gte": a >= b,
+    }.get(op, False)
+
+
+def _entry_matches(entry, where, logic):
+    if not where:
+        return True
+    results = [_cond_matches(entry, c) for c in where]
+    return all(results) if (logic or "and").lower() == "and" else any(results)
+
+
+@app.route("/api/query", methods=["POST"])
+@login_required
+def query_logbook():
+    """Filter the signed-in user's entries with a safe, parameterized grammar.
+    Body: {where:[{field,op,value}...], logic:'and'|'or', fields:[...], sort, desc,
+    limit, aggregate}. aggregate=true returns summed hours + count instead of rows.
+    Reads only; scoped to current_user; no raw SQL."""
+    data = request.json or {}
+    where = data.get("where", [])
+    logic = data.get("logic", "and")
+    entries = [e.to_dict() for e in storage.get_all_entries(user_id=current_user.id)]
+    try:
+        matched = [e for e in entries if _entry_matches(e, where, logic)]
+    except ValueError as ex:
+        return jsonify({"error": str(ex), "allowed_fields": sorted(_QUERY_FIELDS)}), 400
+
+    if data.get("aggregate"):
+        agg = {f: 0.0 for f in _NUM_FIELDS}
+        for e in matched:
+            for f in _NUM_FIELDS:
+                agg[f] += _q_num(e.get(f))
+        return jsonify({"count": len(matched),
+                        "totals": {f: round(v, 1) for f, v in agg.items()}})
+
+    # projection + sort + limit
+    default_fields = ["id", "date", "aircraft_ident", "aircraft_model",
+                      "route_from", "route_to", "route_via", "total_duration",
+                      "num_inst_app", "source"]
+    fields = data.get("fields") or default_fields
+    fields = [f for f in fields if f in _QUERY_FIELDS]
+    sort = data.get("sort")
+    if sort in _QUERY_FIELDS:
+        keyfn = (_q_date if sort == "date" else (_q_num if sort in _NUM_FIELDS else (lambda e: str(e.get(sort) or "").lower())))
+        matched.sort(key=lambda e: (keyfn(e.get("date")) or __import__("datetime").date(1900, 1, 1)) if sort == "date" else keyfn(e), reverse=bool(data.get("desc")))
+    total = len(matched)
+    limit = int(data.get("limit") or 200)
+    rows = [{f: e.get(f) for f in fields} for e in matched[:limit]]
+    return jsonify({"count": total, "returned": len(rows),
+                    "truncated": total > len(rows), "entries": rows})
+
+
+@app.route("/api/entries/batch", methods=["PUT"])
+@login_required
+def batch_update_entries():
+    """Guarded mass-update. Body: {entry_ids:[...] OR where:[...]+logic, fields:{...},
+    dry_run}. dry_run=true returns the affected count + sample without changing anything.
+    Skips locked entries. Scoped to current_user."""
+    data = request.json or {}
+    fields = data.get("fields", {})
+    uid = current_user.id
+    # resolve target set
+    if data.get("entry_ids"):
+        targets = [storage.get_entry(i, user_id=uid) for i in data["entry_ids"]]
+        targets = [t for t in targets if t]
+    else:
+        where = data.get("where", [])
+        logic = data.get("logic", "and")
+        all_e = storage.get_all_entries(user_id=uid)
+        try:
+            targets = [e for e in all_e if _entry_matches(e.to_dict(), where, logic)]
+        except ValueError as ex:
+            return jsonify({"error": str(ex)}), 400
+    locked = [t for t in targets if getattr(t, "locked", False)]
+    editable = [t for t in targets if not getattr(t, "locked", False)]
+
+    if data.get("dry_run") or not fields:
+        sample = [{"id": t.id, "date": t.date, "aircraft_ident": t.aircraft_ident,
+                   "route_from": t.route_from, "route_to": t.route_to} for t in editable[:15]]
+        return jsonify({"dry_run": True, "would_update": len(editable),
+                        "skipped_locked": len(locked), "sample": sample,
+                        "fields_to_set": fields})
+    updated = 0
+    allowed = _QUERY_FIELDS - {"id", "locked", "source"}
+    for t in editable:
+        for k, v in fields.items():
+            if k not in allowed:
+                continue
+            if k in _NUM_FIELDS:
+                setattr(t, k, parse_float(v) if k not in ("num_inst_app", "landings_day", "landings_night", "takeoffs_day", "takeoffs_night") else parse_int(v))
+            elif k in ("route_from", "route_to"):
+                setattr(t, k, normalize_airport(v))
+            elif k == "route_via":
+                setattr(t, k, normalize_route_via(v))
+            else:
+                setattr(t, k, v)
+        storage.update_entry(t, user_id=uid)
+        updated += 1
+    return jsonify({"success": True, "updated": updated, "skipped_locked": len(locked)})
+
+
 @app.route("/api/summary", methods=["GET"])
 @login_required
 def get_summary():
