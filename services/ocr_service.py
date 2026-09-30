@@ -253,12 +253,20 @@ Example:
         "individual flight rows yourself — read the number the pilot wrote in the totals row. "
         'Return ONLY JSON, no prose: {"totals_this_page": <number>} (or {"totals_this_page": null} if unreadable).')
 
-    def read_printed_page_total(self, image_bytes: bytes) -> Optional[float]:
+    def read_printed_page_total(self, image_bytes: bytes, checksum_guidance: str | None = None) -> Optional[float]:
         """Independently read the printed 'Totals This Page' (Total Duration column).
         Returns None if unreadable. Never raises — a failed checksum read must not
-        break the scan itself."""
+        break the scan itself.
+
+        checksum_guidance: per-logbook description of how the page reconciles (which
+        column holds total time, what the totals rows are called). Checksum schemes vary
+        by logbook, so callers should pass what the user told us about THIS logbook."""
+        prompt = self._PAGE_TOTAL_PROMPT
+        if checksum_guidance:
+            prompt += ("\n\nThis specific logbook's checksum convention (follow it over the generic "
+                       "description above): " + checksum_guidance.strip())
         try:
-            raw = self._gemini_generate(self._PAGE_TOTAL_PROMPT, image_bytes)
+            raw = self._gemini_generate(prompt, image_bytes)
             txt = raw.strip()
             m = re.search(r'\{.*\}', txt, re.S)
             if not m:
@@ -294,6 +302,7 @@ Example:
                                      known_idents: set[str] | None = None,
                                      known_models: set[str] | None = None,
                                      known_airports: set[str] | None = None,
+                                     year_guidance: str | None = None,
                                      ) -> tuple[list[dict], int, int]:
         """
         Extract flight entries from logbook image using Google Gemini.
@@ -316,7 +325,16 @@ Example:
 
             print(f"Sending {len(image_bytes)} byte image to Gemini...")
 
-            raw_text = self._gemini_generate(self.EXTRACTION_PROMPT, image_bytes)
+            # Year-recording schemes vary by logbook (year under the DATE header, a margin
+            # note at each Jan rollover, a dedicated YEAR column, or per-entry). Inject what
+            # the user told us about THIS logbook so the extractor resolves years correctly.
+            prompt = self.EXTRACTION_PROMPT
+            if year_guidance:
+                prompt += ("\n\nHOW THIS LOGBOOK RECORDS THE YEAR (authoritative for this book — follow it): "
+                           + year_guidance.strip() +
+                           " Read the year marker(s) and carry the year forward down the rows until the next marker; "
+                           "every output date must still be MM/DD/YYYY.")
+            raw_text = self._gemini_generate(prompt, image_bytes)
 
             # Parse response
             response_text = raw_text.strip()

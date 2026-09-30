@@ -460,11 +460,33 @@
       document.getElementById('imageInput').click();
     });
 
+    // Per-logbook conventions vary book to book (how the YEAR is recorded, and how a page
+    // reconciles/checksums). Ask once per logbook, cache it, and pass it to every scan so the
+    // extractor resolves years and page-totals THIS book's way. Skippable when it's obvious.
+    function getLogbookProfile() {
+      let p = null;
+      try { p = JSON.parse(localStorage.getItem('logbookProfile') || 'null'); } catch (_) {}
+      if (p && p.asked) return p;
+      const year = prompt(
+        "Quick setup for THIS logbook (leave blank if the page is self-explanatory).\n\n" +
+        "How is the YEAR recorded on each page? e.g. \"written under the DATE header, and in the " +
+        "left margin when it rolls to a new year\", or \"a separate YEAR column\", or \"full 4-digit " +
+        "year on every entry\".", "");
+      const checksum = prompt(
+        "How does each page RECONCILE / checksum? e.g. \"bottom rows Totals This Page / Amt " +
+        "Forwarded / Totals To Date; total time is the rightmost 'Total Duration' column\". " +
+        "Leave blank if none.", "");
+      p = { asked: true, year_guidance: (year || '').trim(), checksum_guidance: (checksum || '').trim() };
+      try { localStorage.setItem('logbookProfile', JSON.stringify(p)); } catch (_) {}
+      return p;
+    }
+
     // Multi-photo selection - process each sequentially
     document.getElementById('imageInput').addEventListener('change', async (e) => {
       const files = Array.from(e.target.files);
       if (!files.length) return;
 
+      window._logbookProfile = getLogbookProfile();
       showState('processing');
       let totalEntries = [];
       let errors = [];
@@ -513,6 +535,9 @@
     async function extractFlightData(file) {
       const formData = new FormData();
       formData.append('image', file);
+      const prof = window._logbookProfile || {};
+      if (prof.year_guidance) formData.append('year_guidance', prof.year_guidance);
+      if (prof.checksum_guidance) formData.append('checksum_guidance', prof.checksum_guidance);
 
       const res = await fetch('/api/logbook/scan/upload', {
         method: 'POST',

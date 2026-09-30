@@ -924,10 +924,14 @@ def upload_scan():
         t1 = time.time()
 
         print(f"Starting Gemini extraction for: {temp_path}")
+        # Per-logbook conventions (year recording + checksum) vary book to book. The client
+        # collects these once when the user starts scanning a logbook and passes them here.
+        year_guidance = (request.form.get("year_guidance") or "").strip() or None
+        checksum_guidance = (request.form.get("checksum_guidance") or "").strip() or None
         ocr_service = LogbookOCRService()
         entries, expected_rows, actual_rows = ocr_service.extract_flights_with_gemini(
             temp_path, known_idents=known_idents, known_models=known_models,
-            known_airports=known_airports
+            known_airports=known_airports, year_guidance=year_guidance
         )
 
         t2 = time.time()
@@ -944,7 +948,7 @@ def upload_scan():
         # Independent page-total checksum (separate read; flags mismatches, never edits rows).
         with open(temp_path, 'rb') as _f:
             _img_bytes = _f.read()
-        printed_total = ocr_service.read_printed_page_total(_img_bytes)
+        printed_total = ocr_service.read_printed_page_total(_img_bytes, checksum_guidance=checksum_guidance)
         checksum = LogbookOCRService.checksum_entries(entries, printed_total)
         if not checksum["reconciled"]:
             print(f"CHECKSUM FLAG: rows={checksum['row_sum']} vs printed={printed_total} "
