@@ -45,7 +45,7 @@ class LogbookOCRService:
 Extract ALL flight entries visible in the image and return them as a JSON array.
 
 Each flight entry should have these fields (use null if not readable):
-- date: MUST always be in "MM/DD/YYYY" format with leading zeros and a 4-digit year. Examples: "05/09/2004", "12/03/2023", "01/15/2010". In handwritten logbooks, the year is often written only once at the top of the page or in a "YEAR" header — you MUST apply that year to every entry on the page. Handwritten dates typically show only month/day (e.g., "1/27" means January 27). Read the month and day digits carefully — a "1" can look like a "7" and vice versa in handwriting. If the year is not visible anywhere on this page, infer it from context: the dates should be sequential and realistic for a pilot logbook (typically 2000-2026). If a date spans multiple days (e.g., "3/26-28"), use the first date. Every date you output MUST have a 4-digit year — never output just "03/10", always "03/10/2004".
+- date: MUST always be in "MM/DD/YYYY" format with leading zeros and a 4-digit year. Examples: "05/09/2004", "12/03/2023", "01/15/2010". FIRST, figure out HOW THIS LOGBOOK RECORDS THE YEAR by looking at the page — it may be: (a) a "YEAR" box/header at the top-left, (b) written in the left margin at the row where the year rolls over to a new year (e.g. a small "21" next to a January entry), (c) a dedicated year column, or (d) a full 4-digit year on each entry. Apply the detected scheme: carry the year down the rows, and when the month sequence rolls from a late month (Nov/Dec) to an early month (Jan/Feb) increment the year unless a written marker says otherwise. Handwritten dates typically show only month/day (e.g., "1/27" means January 27). Read the month and day digits carefully — a "1" can look like a "7", a "2" like a "3", in handwriting. NOTE: rows are usually chronological, but some pages are back-filled OUT OF ORDER — if you see an explicit year marker, trust it over chronological assumptions. If no year is visible anywhere, infer from context (realistic pilot-logbook range, typically 2000-2026). If a date spans multiple days (e.g., "3/26-28"), use the first date. Every date you output MUST have a 4-digit year — never output just "03/10", always "03/10/2004".
 - aircraft_model: FAA aircraft type designator (e.g., "DA20", "C172", "PA28", "TBM7", "C206", "SR22", "BE36"). Use standard FAA designators WITHOUT hyphens. Convert full names: "Piper Cub" → "J3", "Cessna 172" → "C172", "Diamond DA20" → "DA20". For simulators/FTDs, write the type followed by "-FTD" (e.g., "DA42-FTD"), or "Frasca-FTD" for Frasca devices. Be careful with OCR-ambiguous characters: Y vs 7, T vs 7, O vs 0, I vs 1, S vs 5. For example, "C2067" is not valid — it should be "C206T" or another real designator. If the same aircraft type appears on multiple rows, ensure consistency.
 - aircraft_ident: tail number (e.g., "N636DC", "N95225"). If the same tail number appears on multiple rows, ensure consistency — handwriting OCR often confuses Y/7, T/7, O/0, I/1, S/5, B/8. Pick the most likely real tail number.
 - route_from: departure airport ICAO or FAA code (e.g., "BFI", "SEA", "PAE")
@@ -246,11 +246,13 @@ Example:
     # checksum is independent (the extractor never grades its own arithmetic). Lesson
     # learned the hard way: a same-call "page total" just re-sums the model's own rows.
     _PAGE_TOTAL_PROMPT = (
-        "This is a photo of a pilot logbook page. At the very bottom are summary rows, "
-        "one labeled 'TOTALS THIS PAGE'. Read ONLY the handwritten number in that row under the "
-        "rightmost column headed 'TOTAL DURATION OF FLIGHT'. These logbooks split a number into a "
-        "whole-number sub-cell and a tenths sub-cell (e.g. '22 | 3' means 22.3). Do NOT sum the "
-        "individual flight rows yourself — read the number the pilot wrote in the totals row. "
+        "This is a photo of a pilot logbook page. At the very bottom are summary rows. Find the row that "
+        "totals THIS PAGE only (it may be labeled 'Totals This Page', 'Page Total', 'Totals', 'This Page', "
+        "or similar) — NOT the 'Amount Forwarded' row and NOT the cumulative 'Totals To Date' / 'Total To Date' "
+        "running-total row. Read ONLY the handwritten number in that this-page row under the column that holds "
+        "TOTAL FLIGHT TIME (usually the rightmost column, headed 'Total Duration of Flight' or similar). "
+        "Numbers are often split into a whole-number sub-cell and a tenths sub-cell (e.g. '22 | 3' means 22.3). "
+        "Do NOT sum the individual flight rows yourself — read the number the pilot wrote in that totals row. "
         'Return ONLY JSON, no prose: {"totals_this_page": <number>} (or {"totals_this_page": null} if unreadable).')
 
     def read_printed_page_total(self, image_bytes: bytes, checksum_guidance: str | None = None) -> Optional[float]:
