@@ -50,7 +50,7 @@ Each flight entry should have these fields (use null if not readable):
 - aircraft_ident: tail number (e.g., "N636DC", "N95225"). If the same tail number appears on multiple rows, ensure consistency — handwriting OCR often confuses Y/7, T/7, O/0, I/1, S/5, B/8. Pick the most likely real tail number.
 - route_from: departure airport ICAO or FAA code (e.g., "BFI", "SEA", "PAE")
 - route_to: destination airport ICAO or FAA code (e.g., "BFI", "SEA", "PAE")
-- remarks: any remarks or endorsements text. These are aviation shorthand — preserve them as written or use standard aviation abbreviations. Common examples: "ldg" (landing), "appro" or "appr" (approach), "ILS" (instrument landing system), "VOR", "Rwy" (runway), "T&G" or "TnG" (touch and go), "XC" (cross country), "NDB", "GPS", "LOC" (localizer), "RNAV", "steep trns" (steep turns). Instrument approach remarks often look like "ILS 16R PAE" or "RNAV 03 SEZ" (approach type + runway + airport). Do NOT replace aviation terms with non-aviation English words
+- remarks: any remarks or endorsements text. These are aviation shorthand — preserve them as written or use standard aviation abbreviations. Common examples: "ldg" (landing), "appro" or "appr" (approach), "ILS" (instrument landing system), "VOR", "Rwy" (runway), "T&G" or "TnG" (touch and go), "XC" (cross country), "NDB", "GPS", "LOC" (localizer), "RNAV", "steep trns" (steep turns). Instrument approach remarks often look like "ILS 16R PAE" or "RNAV 03 SEZ" (approach type + runway + airport). Do NOT replace aviation terms with non-aviation English words. CRITICAL ROW ALIGNMENT: each row's remarks belong to the SAME physical row as that row's date/aircraft/route — read straight across the row. Do NOT let a remark drift up or down to a neighboring row, even when a remark wraps onto two printed lines or when some rows have no remark (use an empty string for rows with no remark). Sanity check: the airport named in an approach remark (e.g. the "PDX" in "ILS 28R PDX") should be one of the airports in that same row's route — if it matches a different row's route, you've misaligned the remarks
 - sel: single engine land time in decimal hours (the "AIRPLANE SEL" column)
 - mel: multi engine land time in decimal hours (the "AIRPLANE MEL" column)
 - total_duration: total flight time in decimal hours (e.g., 1.4, 2.2)
@@ -409,6 +409,10 @@ Example:
 
             # Clean up garbled remarks
             filtered = self._clean_remarks(filtered)
+
+            # Detect & fix remarks that jumped rows (approach remark names an airport that
+            # belongs to a neighboring row's route — a common scan misalignment)
+            filtered = self._realign_remarks(filtered)
 
             # Fix landings for single-leg flights (common OCR misread: 1→2)
             filtered = self._fix_landings(filtered)
@@ -794,6 +798,83 @@ Example:
                     print(f"Fleet snap: '{ident}' → '{target}' (not in fleet; nearest known tail)")
                     entry['aircraft_ident'] = target
 
+        return entries
+
+    # Approach-notation keywords that are NOT airport codes (so we don't mistake them
+    # for the airport named in a remark like "ILS 28R PDX" or "RNAV (GPS) RWY 34 KRNT").
+    _REMARK_NONAIRPORT = {
+        "ILS", "RNAV", "VOR", "GPS", "LOC", "NDB", "LDA", "SDF", "RNP", "GLS", "DME",
+        "RWY", "VIS", "TNG", "HOLD", "PWR", "EMG", "PAC", "SGL", "DEP", "ARR", "SID",
+        "STAR", "FAF", "MAP", "CIR", "APP", "PTS", "NB", "SB", "EB", "WB", "AND", "THE",
+        "FROM", "WITH", "OFF", "ON", "TO", "DH", "MDA",
+    }
+
+    def _remark_airports(self, remarks: str) -> list[str]:
+        """Airport-like codes mentioned in a remark (3-4 letter tokens, minus approach
+        keywords), normalized to their last 3 letters for matching (KPDX->PDX)."""
+        import re as _re
+        out = []
+        for tok in _re.findall(r"\b([A-Z]{3,4})\b", (remarks or "").upper()):
+            if tok in self._REMARK_NONAIRPORT:
+                continue
+            out.append(tok[-3:])
+        return out
+
+    @staticmethod
+    def _route_codes(entry: dict) -> set:
+        import re as _re
+        codes = set()
+        for f in ("route_from", "route_to", "route_via"):
+            for part in _re.split(r"[-/,\s]+", (entry.get(f) or "")):
+                p = part.strip().upper()
+                if len(p) >= 3:
+                    codes.add(p[-3:])
+        return codes
+
+    def _realign_remarks(self, entries: list[dict]) -> list[dict]:
+        """Fix the common scan error where the REMARKS column is shifted by a row relative
+        to the flight data. An approach remark names the airport it was flown at, which must
+        be on that flight's route. If remarks consistently match a NEIGHBORING row's route,
+        shift them back. If a page has only scattered mismatches (not a clean global shift),
+        leave the data and flag those rows for review instead of risking a bad auto-fix."""
+        n = len(entries)
+        if n < 2:
+            return entries
+        rcodes = [self._route_codes(e) for e in entries]
+        acodes = [self._remark_airports(e.get("remarks", "")) for e in entries]
+        have = [i for i in range(n) if acodes[i] and rcodes[i]]  # rows we can judge
+        if len(have) < 2:
+            return entries
+
+        def score(off):
+            s = 0
+            for i in have:
+                j = i + off
+                if 0 <= j < n and (rcodes[j] & set(acodes[i])):
+                    s += 1
+            return s
+
+        score0 = score(0)
+        best_off, best_score = 0, score0
+        for off in (1, -1, 2, -2):
+            sc = score(off)
+            if sc > best_score:
+                best_off, best_score = off, sc
+
+        # Auto-realign only on strong, unambiguous global-shift evidence: the shifted
+        # offset must match at least twice as many rows as the as-scanned alignment.
+        if best_off != 0 and best_score >= 2 and best_score >= 2 * max(score0, 1):
+            old = [e.get("remarks", "") for e in entries]
+            for j in range(n):
+                src = j - best_off
+                entries[j]["remarks"] = old[src] if 0 <= src < n else ""
+            print(f"Realigned remarks by row offset {best_off} (airport-match {score0}→{best_score})")
+            return entries
+
+        # Otherwise flag rows whose remark airport isn't on their own route.
+        for i in have:
+            if not (rcodes[i] & set(acodes[i])):
+                entries[i]["_remark_mismatch"] = True
         return entries
 
     def _find_ocr_match(self, value: str, candidates: Counter, min_freq: int = 2) -> str | None:
