@@ -1176,8 +1176,11 @@ def import_scanned():
     all_existing = storage.get_all_entries(user_id=uid)
 
     def _ap(x):
+        # Canonicalize airport codes for matching across representations:
+        # KPAE->PAE, CYVR->YVR, PANC->ANC, and bare 3-letter YVR->YVR. Lets a scanned
+        # 3-letter code match a stored 4-letter ICAO code regardless of K/C/P prefix.
         x = (x or "").upper()
-        return x[1:] if (len(x) == 4 and x.startswith("K")) else x
+        return x[-3:] if len(x) == 4 else x
 
     exact = {}
     fuzzy = {}
