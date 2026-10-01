@@ -1167,12 +1167,37 @@ def import_scanned():
         return jsonify({"success": False, "error": "No entries to import"}), 400
 
     uid = current_user.id
-    existing_keys = storage.get_existing_keys(user_id=uid)
+
+    # Build two indexes over the user's existing entries:
+    #  - exact: make_entry_key(date, from, to) -> entry  (same-day, same-route match)
+    #  - fuzzy: (ident, from, to) -> [entries]           (YEAR-TOLERANT match: scanned
+    #    logbook years are often misread — e.g. a handwritten 5 read as 3 — so we must
+    #    match a scanned flight to its existing (GPS/FlightAware) twin ignoring the year.)
+    all_existing = storage.get_all_entries(user_id=uid)
+
+    def _ap(x):
+        x = (x or "").upper()
+        return x[1:] if (len(x) == 4 and x.startswith("K")) else x
+
+    exact = {}
+    fuzzy = {}
+    for e in all_existing:
+        exact.setdefault(make_entry_key(e.date, e.route_from, e.route_to), e)
+        fuzzy.setdefault((e.aircraft_ident.upper(), _ap(e.route_from), _ap(e.route_to)), []).append(e)
+
+    # Paper-only fields FlightAware usually lacks — scan contributes these where the
+    # existing (authoritative) entry is empty. FA stays authoritative for hours & dates.
+    PAPER_FILL = ["remarks", "route_via", "actual_inst", "night", "simulated_inst",
+                  "num_inst_app", "dual_recd", "landings_night"]
+
     entry_ids = []
     updated_count = 0
+    new_count = 0
+    flagged_count = 0
+    consumed = set()  # existing-entry ids already claimed by a scan row this import
+
     for entry_data in entries:
         entry_data.pop("_raw", None)
-
         entry = LogbookEntry(
             date=entry_data.get("date", ""),
             aircraft_model=entry_data.get("aircraft_model", ""),
@@ -1180,85 +1205,78 @@ def import_scanned():
             route_from=normalize_airport(entry_data.get("route_from", "")),
             route_to=normalize_airport(entry_data.get("route_to", "")),
             route_via=normalize_route_via(entry_data.get("route_via", "")),
-            sel=parse_float(entry_data.get("sel")),
-            mel=parse_float(entry_data.get("mel")),
-            day=parse_float(entry_data.get("day")),
-            night=parse_float(entry_data.get("night")),
+            sel=parse_float(entry_data.get("sel")), mel=parse_float(entry_data.get("mel")),
+            day=parse_float(entry_data.get("day")), night=parse_float(entry_data.get("night")),
             cross_country=parse_float(entry_data.get("cross_country")),
             actual_inst=parse_float(entry_data.get("actual_inst")),
             simulated_inst=parse_float(entry_data.get("simulated_inst")),
             num_inst_app=parse_int(entry_data.get("num_inst_app")),
             landings_day=parse_int(entry_data.get("landings_day")),
             landings_night=parse_int(entry_data.get("landings_night")),
-            pic=parse_float(entry_data.get("pic")),
-            sic=parse_float(entry_data.get("sic")),
+            pic=parse_float(entry_data.get("pic")), sic=parse_float(entry_data.get("sic")),
             dual_recd=parse_float(entry_data.get("dual_recd")),
             dual_given=parse_float(entry_data.get("dual_given")),
-            solo=parse_float(entry_data.get("solo")),
-            sim=parse_float(entry_data.get("sim")),
+            solo=parse_float(entry_data.get("solo")), sim=parse_float(entry_data.get("sim")),
             total_duration=parse_float(entry_data.get("total_duration")),
-            remarks=entry_data.get("remarks", ""),
-            reviewed=False,
-            source="scan",
+            remarks=entry_data.get("remarks", ""), reviewed=False, source="scan",
         )
 
-        key = make_entry_key(entry.date, entry.route_from, entry.route_to)
-        existing = existing_keys.get(key)
-        if existing:
-            # Merge: scan values win on conflicts, otherwise combine
-            old = storage.get_entry(existing["id"], user_id=uid)
-            if old:
-                entry.id = old.id
-                # Numeric fields: prefer scan value if non-zero, else keep existing
-                for fld in ('sel', 'mel', 'day', 'night', 'cross_country',
-                            'actual_inst', 'simulated_inst', 'pic', 'sic',
-                            'dual_recd', 'dual_given', 'solo', 'sim',
-                            'total_duration'):
-                    scan_val = getattr(entry, fld)
-                    old_val = getattr(old, fld)
-                    setattr(entry, fld, scan_val if scan_val else old_val)
-                for fld in ('num_inst_app', 'landings_day', 'landings_night'):
-                    scan_val = getattr(entry, fld)
-                    old_val = getattr(old, fld)
-                    setattr(entry, fld, scan_val if scan_val else old_val)
-                # String fields: prefer scan if non-empty, else keep existing
-                for fld in ('aircraft_model', 'aircraft_ident', 'route_via', 'remarks'):
-                    scan_val = getattr(entry, fld)
-                    old_val = getattr(old, fld)
-                    setattr(entry, fld, scan_val if scan_val else old_val)
-                # Keep reviewed/locked status from existing entry
-                entry.reviewed = old.reviewed
-                entry.locked = old.locked
-                entry.created_at = old.created_at
-                # Source: mark as both if different
-                if old.source and old.source != "scan":
-                    entry.source = f"{old.source}+scan"
-                # Keep FlightAware's estimated flag only if scan didn't provide duration
-                if not entry_data.get("total_duration"):
-                    entry.duration_estimated = old.duration_estimated
-                else:
-                    entry.duration_estimated = False
-            storage.update_entry(entry, user_id=uid)
-            entry_ids.append(entry.id)
+        # 1) exact same-day match; 2) year-tolerant match to a GPS/FA twin
+        old = exact.get(make_entry_key(entry.date, entry.route_from, entry.route_to))
+        year_corrected = False
+        if old is None:
+            cands = fuzzy.get((entry.aircraft_ident, _ap(entry.route_from), _ap(entry.route_to)), [])
+            for c in cands:
+                if c.id in consumed:
+                    continue
+                if abs((c.total_duration or 0) - (entry.total_duration or 0)) < 0.6:
+                    old = c
+                    year_corrected = (c.date != entry.date)
+                    break
+
+        if old is not None:
+            consumed.add(old.id)
+            # FA/GPS authoritative: keep old's date, hours, pic, landings_day, cross_country.
+            # Fill only paper fields the existing entry is missing.
+            for fld in PAPER_FILL:
+                if not getattr(old, fld):
+                    setattr(old, fld, getattr(entry, fld))
+            if "scan" not in (old.source or ""):
+                old.source = f"{old.source}+scan" if old.source else "scan"
+            if year_corrected:
+                old.needs_review = True
+                note = f"Scanned as {entry.date}; kept the recorded date {old.date} (scan year unreliable) — verify."
+                old.review_note = (old.review_note + " " + note).strip() if old.review_note else note
+                flagged_count += 1
+            storage.update_entry(old, user_id=uid)
+            entry_ids.append(old.id)
             updated_count += 1
         else:
-            entry_id = storage.add_entry(entry, user_id=uid)
-            entry_ids.append(entry_id)
-            existing_keys[key] = {"id": entry_id, "source": "scan"}
+            # Genuinely new flight — but scan years are unreliable, so flag for review.
+            entry.needs_review = True
+            entry.review_note = "New flight from scan — verify the YEAR (handwritten scan years are easily misread)."
+            flagged_count += 1
+            eid = storage.add_entry(entry, user_id=uid)
+            entry_ids.append(eid)
+            exact[make_entry_key(entry.date, entry.route_from, entry.route_to)] = entry
+            fuzzy.setdefault((entry.aircraft_ident, _ap(entry.route_from), _ap(entry.route_to)), []).append(entry)
+            new_count += 1
 
-    new_count = len(entry_ids) - updated_count
     parts = []
     if new_count:
         parts.append(f"{new_count} new")
     if updated_count:
-        parts.append(f"{updated_count} updated")
-    msg = f"Imported {' and '.join(parts)} flight(s) from scanned logbook"
+        parts.append(f"{updated_count} merged into existing flights")
+    msg = f"Imported {' and '.join(parts) or '0'} from scanned logbook"
+    if flagged_count:
+        msg += f"; flagged {flagged_count} for your review"
 
     return jsonify({
         "success": True,
         "imported": len(entry_ids),
         "new": new_count,
         "updated": updated_count,
+        "flagged": flagged_count,
         "entry_ids": entry_ids,
         "message": msg,
     })
