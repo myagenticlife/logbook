@@ -776,6 +776,24 @@ Example:
                 print(f"Ident fix: '{ident}' → '{corrections[ident]}'")
                 entry['aircraft_ident'] = corrections[ident]
 
+        # Known-fleet snap (authoritative). A scanned tail that is NOT one of the pilot's
+        # known tail numbers but is within 1-2 characters of one is almost certainly an OCR
+        # misread — e.g. N790TB mis-scanned as N740TB/N750TB/N790TD. Snap it REGARDLESS of
+        # frequency: a systematic misread repeats often and would otherwise look "correct",
+        # which is exactly what let a one-plane fleet explode into fake tails + duplicates.
+        if known_idents:
+            known_upper = {k.upper() for k in known_idents if k}
+            for entry in entries:
+                ident = (entry.get('aircraft_ident') or '').upper()
+                if not ident or ident in known_upper:
+                    continue
+                close = [k for k in known_upper if len(k) == len(ident) and self._levenshtein(ident, k) <= 2]
+                d1 = [k for k in close if self._levenshtein(ident, k) == 1]
+                target = d1[0] if len(d1) == 1 else (close[0] if len(close) == 1 else None)
+                if target and target != ident:
+                    print(f"Fleet snap: '{ident}' → '{target}' (not in fleet; nearest known tail)")
+                    entry['aircraft_ident'] = target
+
         return entries
 
     def _find_ocr_match(self, value: str, candidates: Counter, min_freq: int = 2) -> str | None:
