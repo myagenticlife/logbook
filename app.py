@@ -1078,6 +1078,34 @@ def scan_page():
     return render_template("scan.html")
 
 
+@app.route("/api/passport/scan", methods=["POST"])
+@login_required
+def passport_scan():
+    """Extract passport fields from an uploaded image (multipart 'image' or JSON
+    {image_base64}) using the same Gemini OCR as the logbook scanner. Returns
+    {identity, document}. Used by the suite's People / passport-scan flow."""
+    import base64
+    from services.ocr_service import LogbookOCRService, OCRAuthError, OCRError
+    try:
+        if 'image' in request.files:
+            image_bytes = request.files['image'].read()
+        else:
+            b64 = (request.json or {}).get('image_base64') or (request.json or {}).get('image') or ''
+            if ',' in b64 and b64[:30].strip().lower().startswith('data:'):
+                b64 = b64.split(',', 1)[1]  # strip data URL prefix
+            image_bytes = base64.b64decode(b64) if b64 else b''
+        if not image_bytes:
+            return jsonify({"success": False, "error": "No image provided"}), 400
+        result = LogbookOCRService().extract_passport(image_bytes)
+        return jsonify({"success": True, **result})
+    except OCRAuthError as e:
+        return jsonify({"success": False, "error": f"Scanning is not available: {e}", "kind": "auth"}), 502
+    except OCRError as e:
+        return jsonify({"success": False, "error": f"Passport scan failed: {e}", "kind": "ocr"}), 502
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/logbook/scan/upload", methods=["POST"])
 @login_required
 def upload_scan():

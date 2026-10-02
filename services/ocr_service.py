@@ -255,6 +255,39 @@ Example:
         "Do NOT sum the individual flight rows yourself — read the number the pilot wrote in that totals row. "
         'Return ONLY JSON, no prose: {"totals_this_page": <number>} (or {"totals_this_page": null} if unreadable).')
 
+    _PASSPORT_PROMPT = (
+        "This is a photo of a passport (or passport-card / travel document). Extract the holder's "
+        "details from BOTH the visual inspection zone and the two-line machine-readable zone (MRZ) at "
+        "the bottom. The MRZ is authoritative when the printed text is unclear. Return ONLY strict JSON, "
+        "no prose, in this exact shape:\n"
+        '{"identity": {"first_name": "", "middle_name": "", "last_name": "", "gender": "M|F|X", '
+        '"date_of_birth": "YYYY-MM-DD", "place_of_birth": "", "citizenship": "", "country_of_residence": ""}, '
+        '"document": {"type": "passport", "number": "", "issuing_country": "", "issue_date": "YYYY-MM-DD", '
+        '"expiration_date": "YYYY-MM-DD"}}\n'
+        "Rules: use a full country name for citizenship/issuing_country (convert ISO codes: USA->United States, "
+        "GBR->United Kingdom, CAN->Canada, etc.). last_name = surname; given names split into first_name + "
+        "middle_name. gender from the MRZ sex field (M/F; X if unspecified). Dates MUST be YYYY-MM-DD "
+        "(the MRZ uses YYMMDD — infer the century sensibly: birth years are in the past, expiry in the "
+        "future). Leave a field as an empty string if it is not present or not legible. Do NOT guess the "
+        "passport number or dates — only read what is printed.")
+
+    def extract_passport(self, image_bytes: bytes) -> dict:
+        """Extract identity + passport document fields from a passport photo via Gemini.
+        Returns {"identity": {...}, "document": {...}}. Raises OCRAuthError/OCRError on
+        auth/API failure (so the caller can surface the real reason)."""
+        self._init_gemini()  # raises OCRAuthError if unconfigured
+        raw = self._gemini_generate(self._PASSPORT_PROMPT, image_bytes)
+        txt = (raw or "").strip()
+        try:
+            m = re.search(r'\{.*\}', txt, re.S)
+            obj = json.loads(m.group(0)) if m else {}
+        except Exception as e:
+            raise OCRError(f"Passport scan returned an unparseable response: {e}")
+        obj.setdefault("identity", {})
+        obj.setdefault("document", {})
+        obj["document"]["type"] = "passport"
+        return obj
+
     def read_printed_page_total(self, image_bytes: bytes, checksum_guidance: str | None = None) -> Optional[float]:
         """Independently read the printed 'Totals This Page' (Total Duration column).
         Returns None if unreadable. Never raises — a failed checksum read must not
